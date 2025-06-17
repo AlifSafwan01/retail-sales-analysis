@@ -1,0 +1,1169 @@
+---
+title: "Transaction and Customer Behavior for Chip Products Analysis"
+author: "Alif Safwan"
+date: "2025-01-06"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    number_sections: true
+    fig_width: 6
+    fig_height: 4
+    keep_tex: true
+fontsize: 11pt
+geometry: margin=1in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(tidy = TRUE, tidy.opts = list(width.cutoff = 60))
+```
+
+# Import the library
+
+```{r library, message=FALSE}
+library(dplyr) #manipulate data frame
+library(ggplot2) #visualization
+library(readxl) #read excel file
+library(stringr) #manipulate string
+library(tidyr) #reshape data frame format
+library(tidytext) #text mining
+library(car) #levene Test
+library(PMCMRplus) # Post Hoc Test for Anova with unequal variance cases
+library(arules) # Apriori algorithm
+library(arulesViz) # Apriori algorithm visualisation
+```
+
+# Import the Transation and Customer Behavior Data
+
+```{r import Transaction data}
+#from excel file
+Trans = read_excel("C:/Users/User/Documents/Project Forage/Quantium/QVI_transaction_data.xlsx")
+```
+
+```{r import Customer Behavior Data}
+#from csv file
+Cust = read.csv("C:/Users/User/Documents/Project Forage/Quantium/QVI_purchase_behaviour.csv")
+
+```
+
+# Exploratory Data Analysis for Transaction Data
+
+```{r Trans variable and data type}
+str(Trans)
+```
+
+There are 8 variables and 264,836 observations in transaction data.
+1) DATE : The date of transaction occurred
+2) STORE_NBR : The unique ID assigned to each store
+3) LYLTY_CARD_NBR : The unique ID for each customer
+4) TXN_ID : The unique ID for each transaction
+5) PROD_NBR : The unique ID for each chip product
+6) PROD_NAME : The name of the chip product
+7) PROD_QTY : The quantity purchased by the customer per transaction
+8) TOT_SALES : The total price per transaction for chip product
+
+Based on DATE variable, the date of the transaction is stored as an integer. Therefore, for better readability, we need to convert it to a date data type. Only two variables, PROD_QTY and TOT_SALES are true numerical variables. The rest may be stored as numeric data types, but they are actually just ID numbers.
+
+```{r Convert DATE from numeric to date format}
+# csv and excel store dates as integers, where ) represents December 30, 1899
+Trans <- Trans %>%
+  mutate(DATE = as.Date(DATE, origin = "1899-12-30"))
+```
+
+```{r Check for duplicated rows in Trans}
+sum(duplicated(Trans))
+```
+It seems there is one observation that entirely duplicated across all variables.
+
+```{r Display duplicated Observations in Trans}
+Trans %>%
+  filter(duplicated(.))
+```
+
+```{r TXN_ID 108462}
+Trans %>%
+  filter(TXN_ID == 108462)
+```
+
+```{r Remove duplicated observations from Trans}
+Trans <- Trans %>%
+  distinct()
+```
+
+Next, we want to know whether each observation represents a unique transaction.
+
+```{r Check whether the number of observations equals the number of unique transactions}
+nrow(Trans) == n_distinct(Trans$TXN_ID)
+```
+The result shows FALSE, indicating that the number of unique TXN_IDs is less than the number of observations, meaning that different products were purchased in the same transaction.
+
+```{r Check the number of unique customers per transaction}
+Trans %>%
+  group_by(TXN_ID) %>%
+  summarise(unique_cust = n_distinct(LYLTY_CARD_NBR)) %>%
+  filter(unique_cust > 1)
+```
+
+There are two 'TXN_ID's with more than one customer.
+
+```{r View details of TXN_ID 155468}
+Trans %>%
+  filter(TXN_ID == 155468)
+```
+
+```{r View details of TXN_ID 155469}
+Trans %>%
+  filter(TXN_ID == 155469)
+```
+
+Its look like both transactions occurred at STORE_NBR 155 and involved the same two customers.Perhaps by looking into the purchas history of these customers based on their 'LYLTY_CARD_NBR's we can gain more insight.
+
+```{r View details of LYLTY_CARD_NBR 155072}
+Trans %>%
+  filter(LYLTY_CARD_NBR == 155072)
+```
+
+```{r View details of LYLTY_CARD_NBR 155010}
+Trans %>%
+  filter(LYLTY_CARD_NBR == 155010) %>%
+  arrange(DATE)
+```
+
+Since 'TXN_ID's are uniquely assigned ID, we should leave them unchanged. However, it must be noted that if our analysis involves combining data based on 'TXN_ID, we should consult the client about these transactions ID in the given data to ensure data integrity is maintained.
+
+There is only 1 category variable, which is 'PROD_NAME'. Let's examine the unique groups in this variable. 
+
+```{r View unique product names}
+unique(Trans$PROD_NAME)
+```
+
+In total, there is 114 different products in this variable. 'PROD_NAME' includes both the pack size and brand name. Our goal is to clear and separate these components to ensure they are correctly split and labeled. This will help with further analysis, such as identifying whether any of the products are not a chip products.
+
+```{r Split prod_name into brand-product-pack size}
+Trans <- Trans %>%
+  mutate(
+  # Extract packed_size (e.g., "175g", "300g")
+  packed_size = str_extract(PROD_NAME, "[0-9]+"),
+  
+  # Extract product_brand (first word or phrase before product details)
+  product_brand = str_extract(PROD_NAME, "^[^0-9]+?\\b"),
+  
+  # Remove brand and packed size to isolate product_name
+  product_name = str_remove(PROD_NAME, paste0(packed_size, "[a-zA-Z]+\\b")) %>%
+    str_remove(product_brand) %>%
+    str_squish() # Remove extra spaces
+  )
+```
+
+
+In the code above, 'packed_size' is extracted from 'PROD_NAME' by identifying a sequence of digits. Based on the unique product names, it's safe to assume that each 'PROD_NAME' contains only one numeric sequence, which is followed by the character "g" or "G".
+
+As for 'product_brand', all brand names appear at the beginning of the 'PROD_NAME'. Therefore, extracting the first word is a good initial step, but further cleaning is needed.
+
+Lastly, 'product_name' is obtained by removing both the 'packed_size' and 'product_brand' from the original 'PROD_NAME'. However, additional cleaning is necessary.
+
+Further refinement is required for 'product_brand' because some brand names consist of more than one word, whereas our current method extracts only the first word. Also, some brands appear under different variations—such as "Red Rock Deli" and "RRD"—even though they refer to the same product
+
+```{r Clean and standardize product brand names}
+Trans <- Trans %>%
+  mutate(product_brand = case_when(
+    product_brand == "Natural" ~ "Natural Chip Co.",
+    product_brand == "Old" ~ "Old El Paso",
+    product_brand == "Grain" ~ "Grain Waves",
+    product_brand == "Burger" ~ "Burger Rings",
+    product_brand == "Infzns" ~ "Infuzions",
+    product_brand == "Red" ~ "Red Rock Deli",
+    product_brand == "Dorito" ~ "Doritos",
+    product_brand == "Smith" ~ "Smiths",
+    product_brand == "GrnWves" ~ "Grain Waves",
+    product_brand == "Tyrrells" ~ "Tyrrells Crisps",
+    product_brand == "Cobs" ~ "Cobs",
+    product_brand == "French" ~ "French Fries",
+    product_brand == "RRD" ~ "Red Rock Deli",
+    product_brand == "Snbts" ~ "Sunbites",
+    product_brand == "NCC" ~ "Natural Chip Co.",
+    product_brand == "WW" ~ "Woolworths",
+    TRUE ~ product_brand
+  ))
+unique(Trans$product_brand)
+```
+
+After cleaning, there are 21 product brands. Next, we want to look at the list of unique products under each brand. 
+
+```{r Natural Chip Co.}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Natural Chip Co.") %>%
+  unique()
+```
+
+```{r CCs}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "CCs") %>%
+  unique()
+```
+
+```{r Smiths}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Smiths") %>%
+  unique()
+```
+
+```{r Kettle}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Kettle") %>%
+  unique()
+```
+
+```{r Old El Paso}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Old El Paso") %>%
+  unique()
+```
+
+```{r Grain Waves}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Grain Waves") %>%
+  unique()
+```
+
+```{r Doritos}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Doritos") %>%
+  unique()
+```
+
+```{r Twisties}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Twisties") %>%
+  unique()
+```
+
+```{r Burger Rings}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Burger Rings") %>%
+  unique()
+```
+
+```{r Thins}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Thins") %>%
+  unique()
+```
+
+```{r Cheezels}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Cheezels") %>%
+  unique()
+```
+
+```{r Infuzions}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Infuzions") %>%
+  unique()
+```
+
+```{r Red Rock Deli}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Red Rock Deli") %>%
+  unique()
+```
+
+```{r Pringles}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Pringles") %>%
+  unique()
+```
+
+```{r Tyrrells Crisps}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Tyrrells Crisps") %>%
+  unique()
+```
+
+```{r Cobs}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Cobs") %>%
+  unique()
+```
+
+```{r Woolworths}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Woolworths") %>%
+  unique()
+```
+
+```{r French Fries}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "French Fries") %>%
+  unique()
+```
+
+```{r Tostitos}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Tostitos") %>%
+  unique()
+```
+
+```{r Cheetos}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Cheetos") %>%
+  unique()
+```
+
+```{r Sunbites}
+Trans %>%
+  dplyr::select(PROD_NBR,product_brand,product_name) %>%
+  filter(product_brand == "Sunbites") %>%
+  unique()
+```
+
+We rename certain products to proper name.
+
+```{r Rename products}
+Trans <- Trans %>%
+  mutate(product_name = case_when(
+    product_name == "Chip Compny SeaSalt" ~ "Sea Salt",
+    product_name == "ChipCo Hony Soy Chckn" ~ "Honey Soy Chicken",
+    product_name == "Chip Co Tmato Hrb&Spce" ~ "Tomato Herbs & Spices",
+    product_name == "ChipCO Sea Salt & Vinegr" ~ "Sea Salt & Vinegar",
+    product_name == "Chip Thinly S/Cream&Onion" ~ "Thinly Cut Sour Cream & Onion",
+    product_name == "Chip Thinly Cut Original" ~ "Thinly Cut Original",
+    product_name == "Thinly Swt Chli&S/Cream" ~ "Thinly Cut Sweet Chilli & Sour Cream",
+    product_name == "Crinkle Cut French OnionDip" ~ "Crinkle Cut French Onion Dip",
+    product_name == "Crinkle Cut Chips Chs&Onion" ~ "Crinkle Cut Chips Cheese & Onion",
+    product_name == "Crnkle Chip Orgnl Big Bag" ~ "Crinkle Chip Original Big Bag",
+    product_name == "Chip Thinly CutSalt/Vinegr" ~ "Thinly Cut Salt & Vinegar",
+    product_name == "Crinkle Cut Snag&Sauce" ~ "Crinkle Cut Snag & Sauce",
+    product_name == "Tortilla ChpsHny&Jlpno Chili" ~ "Tortilla Chips Honey & Jalapeno Chilli",
+    product_name == "Swt Pot Sea Salt" ~ "Sweet Potato Sea Salt",
+    product_name == "Sensations BBQ&Maple" ~ "Sensations BBQ & Maple",
+    product_name == "Tortilla ChpsBtroot&Ricotta" ~ "Tortilla Chips Beetroot & Ricotta",
+    product_name == "Tortilla ChpsFeta&Garlic" ~ "Tortilla Chips Feta & Garlic",
+    product_name == "El Paso Salsa Dip Tomato Mild" ~ "Salsa Dip Tomato Mild",
+    product_name == "El Paso Salsa Dip Chnky Tom Ht" ~ "Salsa Dip Chunky Tomato Hot",
+    product_name == "El Paso Salsa Dip Tomato Med" ~ "Salsa Dip Tomato Medium",
+    product_name == "Waves Sweet Chilli" ~ "Sweet Chilli",
+    product_name == "Waves Sour Cream&Chives" ~ "Sour Cream & Chives",
+    product_name == "Plus Btroot & Chilli Jam" ~ "Plus Beetroot & Chilli Jam",
+    product_name == "Corn Chp Supreme" ~ "Corn Chip Supreme",
+    product_name == "Sour Cream &OnionStacked Chips" ~ "Sour Cream & Onion Stacked Chips",
+    product_name == "Chips Light& Tangy" ~ "Chips Light & Tangy",
+    product_name == "Chips Originl saltd" ~ "Chips Original salted",
+    product_name == "Chips Seasonedchicken" ~ "Chips Seasoned Chicken",
+    product_name == "Crn Crnchers Tangy Gcamole" ~ "Corn Crunchers Tangy Gucamole",
+    product_name == "Thai SweetChili PotatoMix" ~ "Thai Sweet Chili Potato Mix",
+    product_name == "SourCream&Herbs Veg Strws" ~ "Sour Cream & Herbs Veggie Straws",
+    product_name == "Mango Chutny Papadums" ~ "Mango Chutney Papadams",
+    product_name == "Rock Deli Thai Chilli&Lime" ~ "Thai Chilli & Lime",
+    product_name == "Rock Deli SR Salsa & Mzzrlla" ~ "SR Salsa & Mozzarella",
+    product_name == "Rock Deli Sp Salt & Truffle" ~ "Sp Salt & Truffle",
+    product_name == "Chilli& Coconut" ~ "Chilli & Coconut",
+    product_name == "Rock Deli Chikn&Garlic Aioli" ~ "Chicken & Garlic Aioli",
+    product_name == "SR Slow Rst Pork Belly" ~ "SR Slow Roast Pork Belly",
+    product_name == "Sthrn FriedChicken" ~ "Southern Fried Chicken",
+    product_name == "Sweet&Spcy BBQ" ~ "Sweet & Spicy BBQ",
+    product_name == "SourCream Onion" ~ "Sour Cream Onion",
+    product_name == "Slt Vingar" ~ "Salt Vinegar",
+    product_name == "Popd Swt/Chlli &Sr/Cream Chips" ~ "Pop'd Sweet Chilli & Sour Cream Chips",
+    product_name == "Popd Sea Salt Chips" ~ "Pop'd Sea Salt Chips",
+    product_name == "Popd Sour Crm &Chives Chips" ~ "Pop'd Sour Cream & Chives Chips",
+    product_name == "Fries Potato Chips" ~ "French Fries Potato Chips",
+    product_name == "Rings" ~ "Burger Rings",
+    product_name == "Chs & Bacon Balls" ~ "Cheese & Bacon Balls",
+    product_name == "Whlgrn Crisps Cheddr&Mstrd" ~ "Wholegrain Crisps Cheddar & Mustard",
+    product_name == "Whlegrn Crisps Frch/Onin" ~ "Wholegrain Crisps French Onion",
+    TRUE ~ product_name
+  ))
+```
+
+After reviewing all the products, we noticed that some of them are not chip products but are actually salsa dip. 
+
+```{r Check for words in product_name that may indicate non-chip products}
+Trans %>%
+  # Separate product_name into individual words
+  mutate(product_name = str_replace_all(product_name, "\\s+", " ")) %>%
+  unnest_tokens(word, product_name) %>% 
+  # Group by word and count occurrences
+  count(word, sort = TRUE)
+```
+
+Since, "salsa" and "dip" are likely not chip products, we need to review them first. If they are indeed not chips, we should remove them from our dataset.
+
+```{r Identify products that contain salsa or dip in their name}
+Trans %>%
+  dplyr::select(product_brand,product_name) %>%
+  filter(str_detect(product_name, regex("salsa|dip",ignore_case = TRUE))) %>% unique()
+```
+
+Some products still qualify as chip products even though their names contain "salsa" or "dip". However, the rest are not chip products. Therefore, we will remove the non-chip products from our dataset.
+
+```{r Remove non-chip products}
+Trans <- Trans %>%
+  filter(!(product_name %in% c("Salsa Dip Tomato Mild","Salsa Medium","Salsa Dip Chunky Tomato Hot","	Mild Salsa","Salsa Dip Tomato Medium","Medium Salsa","Salsa Mild")))
+```
+
+```{r Check the remaining product brand}
+unique(Trans$product_brand)
+```
+now that we've remove the non-chip products, we can see here only 20 product brands remain.
+
+```{r Check pack size information}
+str(Trans$packed_size)
+unique(Trans$packed_size)
+```
+
+The 'packed_size' is stored as a character type because we extracted it as a string. There are 21 different pack sizes across all products.
+
+```{r Check for missing Values in the Trans dataset}
+colSums(is.na(Trans))
+```
+There are no missing values in any of the columns. Next, we check a simple summary for each column.
+
+```{r Generate a simple summary for each column in Trans dataset}
+summary(Trans)
+```
+
+As we see, the maximum values for 'PROD_QTY' and 'TOT_SALES' are quite extreme. So, let's take a look at the box plots for both of them.
+
+```{r Boxplot for PROD_QTY}
+Trans %>%
+  ggplot(aes(x = PROD_QTY)) +
+  geom_boxplot()
+```
+
+```{r Boxplot for TOT_SALES}
+Trans %>%
+  ggplot(aes(x = TOT_SALES)) +
+  geom_boxplot()
+```
+
+From the box plots, we can see that the extreme values are far away from the rest, they clearly stand out as outliers. So, let's take a closer look at these outliers.
+
+```{r Check the rows with extreme values}
+Trans %>%
+  filter(PROD_QTY == 200 | TOT_SALES == 650)
+```
+
+The result shows only two rows with extreme outliers, and both transactions were made by same loyalty card number.
+
+```{r Check all transactions made by loyalty card number 226000}
+Trans %>%
+  filter(LYLTY_CARD_NBR == 226000)
+```
+
+Based on output, this loyalty number made only those two outlier transactions. It's possible that this person purchased for commercial purposes. So, we will exclude this customer from our dataset.
+
+```{r Remove loyalty card number 226000 from Trans dataset}
+Trans <- Trans %>%
+  filter(LYLTY_CARD_NBR != 226000)
+```
+
+```{r Recheck the Trans summary}
+summary(Trans)
+```
+
+By looking at the updated summary, it seems there are no longer any outliers in 'PROD_QTY' and "TOT_SALES.
+
+Next, we want to check whether transactions occurred every day between 2018-07-01 and 2019-06-30. Specifically, how many days had no chip transactions?
+
+```{r Identify days without any transactions}
+Trans %>%
+  group_by(DATE) %>%
+  summarise(total_trans_each_day = n()) %>%
+  right_join(
+    data.frame(DATE = seq.Date(from = min(Trans$DATE),to = max(Trans$DATE), by = "day"))) %>%
+  filter(is.na(total_trans_each_day))
+```
+
+We can see that only 25-12-2018 had no transactions, likely because it was Christmas and the stores were closed. There's a clear gap between 24-12-2018 and 26-12-2018, and transaction volume appears to increase just before Christmas, probably due to holiday preparations.
+
+```{r plot total transactions per day}
+Trans %>%
+  group_by(DATE) %>%
+  summarise(total_trans_each_day = n()) %>%
+  right_join(
+    data.frame(DATE = seq.Date(from = min(Trans$DATE),to = max(Trans$DATE), by = "day"))) %>%
+  ggplot(aes(x = DATE, y = total_trans_each_day)) +
+  geom_line(color = "blue") +
+  labs(title = "Total Transactions per Day", x = "Date", y = "Number of Transactions") +
+  theme_minimal()
+```
+
+The line plot gives a clear view of daily transaction patterns. You can easily spot the gap on 25-12-2018, and observe some spikes around major dates, like just before Christmas, indicating increased activity likely tied to holidays or events.
+
+```{r Plot total quantity chip products that customers purchased per transaction}
+Trans %>%
+  group_by(TXN_ID) %>%
+  summarise(Quantity = sum(PROD_QTY)) %>%
+  ungroup() %>%
+  ggplot(aes(x = as.factor(Quantity))) +
+  geom_bar( fill = "blue") +
+  labs( title =  "Total Quantity Chip Products per Transaction",
+        x = "Quantity",
+        y = "Total")
+```
+
+
+```{r Plot total quantity of chips bought for each packed size}
+Trans %>%
+  group_by(packed_size) %>%
+  summarise(total_count = sum(PROD_QTY, na.rm = TRUE)) %>%
+  ggplot(aes(x = reorder(as.integer(packed_size), as.integer(packed_size)), y= total_count)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(title = "Total Quantity of Chips Bought by Packed Size", 
+       x = "Packed Size",
+       y = "Total Quantity") +
+  scale_y_continuous(breaks = seq(0,1000000, by = 10000))
+```
+
+The chart shows that most customers purchased chips in the 175g pack size, followed by the 150g pack size. This suggests that mid-sized packs are the most popular choice among buyers.
+
+```{r Plot total quantity of chips sold by brand}
+Trans %>%
+  group_by(product_brand) %>%
+  summarise(total_count = sum(PROD_QTY)) %>%
+  ggplot(aes(x = reorder(product_brand, - total_count), y = total_count)) +
+  geom_bar(stat = "identity", fill = "red") +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  labs(title = "Total Number of Chips Sold by Product Brand", y = "Total Quantity", x = "Product Brand")
+```
+
+The most popular chip brand is Kettle, with nearly 80,000 units sold, followed by Smiths with close to 60,000 units, and Doritos with almost 50,000 units.
+
+```{r Plot top best selling chip products}
+Trans %>%
+  group_by(product_name, product_brand) %>%
+  summarise(total_count = sum(PROD_QTY)) %>%
+  ungroup() %>%
+  mutate(ranking = rank(desc(total_count))) %>%
+  filter(ranking <= 20) %>%
+  group_by(product_name, product_brand) %>%
+  ggplot(aes(x = reorder(product_name, ranking), y = total_count)) +
+  geom_bar(stat = "identity", fill = "yellow") +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  labs(title = "Top 20 Best Selling Chip Products", y = "Total Quantity Sold", x = "Product Name")
+```
+
+All of the top 20 products have nearly identical sales figures, with each selling around 6,000 units.
+
+We also want to determine whether the price of each product is fixed or varies
+
+```{r Identify chip products whose prices are not fixed}
+Trans %>%
+  group_by(product_name) %>%
+  summarise(avg_price = mean(TOT_SALES/PROD_QTY), sd_price = sd(TOT_SALES/PROD_QTY), 
+            max_price = max(TOT_SALES/PROD_QTY), min_price = min(TOT_SALES/PROD_QTY)) %>%
+  filter(sd_price > 1e-03)
+```
+
+
+In conclusion, from this EDA of the transaction data, we’ve uncovered several insights:
+
+1) There was no transaction on December 25th, 2018, likely because stores were closed for the Christmas holiday. However, total sales in the days leading up to it were among the highest, suggesting that chips are a popular item for holiday preparations.
+
+2) Most customers typically purchase 175g chip packs, followed by 150g. Larger pack sizes aren’t necessarily the most purchased, and it's common for customers to buy two bags per transaction.
+
+3) Overall, Kettle is the most popular chip brand, followed by Smiths, Doritos, and Pringles.
+
+4) The top 20 chip products each recorded sales around 6,000 units.
+
+5) There are 19 chip products with inconsistent pricing.
+
+# Exploratory Data Analysis for Customer Behavior Data
+
+```{r Cust variable and data type}
+str(Cust)
+```
+
+There are 3 variables: the loyalty card number (LYLTY_CARD_NBR) for each customer, their lifestage (LIFESTAGE), and their premium customer status (PREMIUM_CUSTOMER).
+
+```{r Check for missing values in the Cust dataset}
+colSums(is.na(Cust))
+```
+
+There are no missing values in this dataset. Since it represents customer behavior, each 'LYLTY_CARD_NBR' should ideally be unique.
+
+```{r Check the uniqueness of LYLTY_CARD_NBR}
+n_distinct(Cust$LYLTY_CARD_NBR) == nrow(Cust)
+```
+
+Since the result is TRUE, this confirms that each row represents a unique customer.
+
+```{r Category in LIFESTAGE}
+unique(Cust$LIFESTAGE)
+```
+
+There are 7 unique groups under the 'LIFESTAGE' category.
+
+
+```{r Category in PREMIUM_CUSTOMER}
+unique(Cust$PREMIUM_CUSTOMER)
+```
+
+There are 3 distinct groups in the PREMIUM_CUSTOMER category.
+
+In conclusion from this section, we know that:
+
+1) Each row represents a unique customer.
+
+2) There are seven groups in 'LIFESTAGE' category.
+
+3) There are three groups in 'PREMIUM_CUSTOMER' category.
+
+# Joining the Trans and Cust data frames.
+
+We need to understand customer segmentation for chip products, so we join the Cust data into the Trans data.
+
+```{r Join the Trans and Cust data frames}
+Chip <- Trans %>%
+  left_join(Cust)
+```
+
+```{r Check the dimension of Chip data}
+ncol(Trans) + ncol(Cust) - 1 == ncol(Chip)
+nrow(Trans) == nrow(Chip)
+```
+
+The number of columns and rows match, so the left join is correct.
+
+Next, we check for missing values in case any loyalty card numbers in Trans don't exist in Cust.
+
+```{r Check missing values in the Chip Data}
+colSums(is.na(Chip))
+```
+
+There are no missing values, so each customer's transaction data matches perfectly with their behavioral data.
+
+# Exploratory Data Analysis for Chip Data
+
+Now we want to explore customer behavior.
+
+1) How many customers are in each group of 'LIFESTAGE' category?
+
+```{r PLot total number of customers in each group of Lifestage category}
+Chip %>%
+  group_by(LIFESTAGE, LYLTY_CARD_NBR) %>%
+  summarise(total_count = n()) %>%
+  group_by(LIFESTAGE) %>%
+  summarise(total_count = n()) %>%
+  ggplot(aes(x = reorder(LIFESTAGE, - total_count), y = total_count, fill = LIFESTAGE)) +
+  geom_bar(stat = "identity") + 
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  labs(title = "Total Number of Customers in Each Lifestage Category", x = "LifeStage",
+       y = "Total Customers", fill = "LifeStage Category") +
+  theme_minimal()
+```
+
+The customers who are retirees, older singles/couples, and young singles/couples are the main groups that purchase the most chip products.
+
+2) How many customers are in each group of the 'PREMIUM_CUSTOMER' category?
+
+```{r Plot total number of customers in each group of Premium_Customer category}
+Chip %>%
+  group_by(PREMIUM_CUSTOMER, LYLTY_CARD_NBR) %>%
+  summarise(total_count = n()) %>%
+  group_by(PREMIUM_CUSTOMER) %>%
+  summarise(total_count = n()) %>%
+  ggplot(aes(x = reorder(PREMIUM_CUSTOMER,-total_count), y = total_count, fill = PREMIUM_CUSTOMER)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Total Number of Customers for Each Premium Category", y = "Total Customers", 
+    x =  "Premium Customer", fill = "Premium Customer Category"
+  ) +
+  theme_minimal()
+```
+
+Most of the customers belong to the mainstream group, followed by the budget and premium groups.
+
+Q3) How many customers are in each group of 'LIFESTAGE' and 'PREMIUM_CUSTOMER' category?
+
+```{r Plot total number of customers based on each group of LIFESTAGE and PREMIUM_CUSTOMER}
+Chip %>%
+  group_by(LIFESTAGE, PREMIUM_CUSTOMER, LYLTY_CARD_NBR) %>%
+  summarise(total_count = n()) %>%
+  group_by(LIFESTAGE, PREMIUM_CUSTOMER) %>%
+  summarise(total_count = n()) %>%
+  ggplot(aes(x = reorder(LIFESTAGE, - total_count), y = total_count, fill = PREMIUM_CUSTOMER)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = total_count), 
+            position = position_stack(vjust = 0.5), size = 3, color = "black") +
+  labs(
+    title = "Total Customers Based on Each Lifestage Category and Premium Customer",
+    x = "Life Stage Category",
+    y = "Total Number of Customers",
+    fill = "Premium Customer Category"
+  ) +
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",", scientific = FALSE)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+Q4) What is the Total Chip Sales Based on Each Lifestage Category and Premium Customer?
+
+```{r Plot total Chip Sales Based on Each Lifestage Category and Premium Customer}
+Chip %>%
+  group_by(LIFESTAGE,PREMIUM_CUSTOMER) %>%
+  summarise(total_sales = sum(TOT_SALES, na.rm = TRUE)) %>%
+  ungroup(PREMIUM_CUSTOMER) %>%
+  mutate(percent_tot_sales = total_sales/sum(total_sales, na.rm = TRUE)*100) %>%
+  ggplot(aes(x = LIFESTAGE, y = percent_tot_sales, fill = PREMIUM_CUSTOMER)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(percent_tot_sales,2),"%")), 
+            position = position_stack(vjust = 0.5), size = 3, color = "black") +
+  labs(
+    title = "Total Chip Sales Based on Each Lifestage Category and Premium Customer",
+    x = "Lifestage Category",
+    y = "Total Sales (%)",
+    fill = "Premium Customer Category"
+  ) +
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",", scientific = FALSE)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r Plot total sales for each lifestage and premium customer based on overall proportion}
+Chip %>%
+  group_by(LIFESTAGE,PREMIUM_CUSTOMER) %>%
+  summarise(total_sales = sum(TOT_SALES, na.rm = TRUE)) %>%
+  ungroup(PREMIUM_CUSTOMER, LIFESTAGE) %>%
+  mutate(percent_tot_sales = total_sales/sum(total_sales, na.rm = TRUE)*100) %>%
+  ggplot(aes(x = reorder(LIFESTAGE, - percent_tot_sales), y = percent_tot_sales, fill = PREMIUM_CUSTOMER)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(percent_tot_sales,2),"%")), 
+            position = position_stack(vjust = 0.5), size = 3, color = "black") +
+  labs(
+    title = "Total Chip Sales Based on Each Lifestage Category and Premium Customer",
+    x = "Lifestage Category",
+    y = "Total Sales (%)",
+    fill = "Premium Customer Category"
+  ) +
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",", scientific = FALSE)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Q5) When did customers buy more than 2 products per transaction?
+
+```{r View number of customers purchased more than 2 quantity per transaction in a day}
+Chip %>%
+  filter(PROD_QTY > 2) %>%
+  arrange(DATE, PROD_QTY) %>%
+  group_by(DATE, PROD_QTY) %>%
+  summarise(Total_Customer = n())
+```
+
+Between 14-08-2018 and 20-08-2018, as well as 14-05-2019 and 20-05-2019, some customers purchased more than 2 chip products per transaction.
+
+Q6) How many customers repurchased chip products?
+
+```{r Plot total number of customers repurchased chip products in another day}
+Chip %>%
+  group_by(LYLTY_CARD_NBR) %>%
+  summarise(cus_count = n_distinct(DATE)) %>%
+  ungroup() %>%
+  group_by(factor = as.factor(cus_count)) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x = factor, y = count)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(
+    title = "Total Number of Customers Who Repeated Chip Purchases",
+    x = "Number of Repeated",
+    y = "Number of Customer"
+  ) 
+```
+Q7) How long until the customer buy chip product again?
+
+```{r Summary of duration until customers buy chips again}
+Chip %>%
+  dplyr::select(LYLTY_CARD_NBR, DATE) %>%
+  distinct(LYLTY_CARD_NBR, DATE) %>%
+  arrange(LYLTY_CARD_NBR,DATE) %>%
+  group_by(LYLTY_CARD_NBR) %>%
+  mutate(Next_Buy = as.numeric(lead(DATE)- DATE)) %>%
+  filter(Next_Buy != "NA days") %>%
+  summary()
+```
+
+```{r Plot distribution of Duration until Customers Buy Chis Again (Days)}
+Chip %>%
+  dplyr::select(LYLTY_CARD_NBR, DATE) %>%
+  distinct(LYLTY_CARD_NBR, DATE) %>%
+  arrange(LYLTY_CARD_NBR,DATE) %>%
+  group_by(LYLTY_CARD_NBR) %>%
+  mutate(Next_Buy = as.numeric(lead(DATE)- DATE)) %>%
+  filter(Next_Buy != "NA days") %>%
+  ggplot(aes(x = Next_Buy)) +
+  geom_histogram(fill = "blue") +
+  labs(
+    title = "Distribution of Duration until Customers Buy Chis Again (Days)",
+    x = "Days until Next Purchase",
+    y = "Number of Customers"
+  ) +
+  scale_x_continuous(breaks = seq(0, max(360, na.rm = TRUE), by = 30))
+```
+
+This analysis shows how many days pass before customers repurchase chip products. The summary gives the distribution details, while the histogram helps visualize the frequency of repurchase intervals.
+
+Q8) The difference in total sales between family groups and single/couple groups
+
+```{r ttest total sales between family and single/couple groups}
+t1 <- Chip %>%
+  filter(LIFESTAGE %in% c("NEW FAMILIES","OLDER FAMILIES","YOUNG FAMILIES")) %>%
+  pull(TOT_SALES)
+t2 <- Chip %>%
+  filter(LIFESTAGE %in% c("OLDER SINGLES/COUPLES","MIDAGE SINGLES/COUPLES","YOUNG SINGLES/COUPLES")) %>%
+  pull(TOT_SALES)
+var.test(t1, t2)
+t.test(t1, t2, var.equal = FALSE)
+```
+The mean total sales for family groups and single/couple groups are 7.219946 and 7.271558 respectively. The t-test result shows a statistically significant difference between the two groups, suggesting that single and couple households tend to spend more on chip products compared to families.
+
+Q9) Do sales differ significantly between 'PREMIUM_CUSTOMER' groups?
+
+
+```{r Boxplot of total sales between PREMIUM_CUSTOMER groups}
+Chip %>%
+  ggplot(aes(x = PREMIUM_CUSTOMER, y = TOT_SALES)) +
+  geom_boxplot(fill = "blue") +
+  labs(
+    x = "Premium Customer Groups",
+    y = "Total Sales"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r Statistical summary of total sales based on PREMIUM_CUSTOMER groups}
+Chip %>%
+  group_by(PREMIUM_CUSTOMER) %>%
+  summarise(mean = mean(TOT_SALES, na.rm = TRUE), sd = sd(TOT_SALES, na.rm = TRUE))
+```
+
+```{r levenetest for variance equality between PREMIUM_CUSTOMER groups}
+leveneTest(TOT_SALES ~ PREMIUM_CUSTOMER, data = Chip)
+```
+
+```{r ANOVA test for PREMIUM_CUSTOMER groups}
+oneway.test(TOT_SALES ~ PREMIUM_CUSTOMER,
+  data = Chip,
+  var.equal = FALSE
+)
+```
+
+```{r Post Hoc test of ANOVA for PREMIUM_CUSTOMER groups}
+gamesHowellTest(TOT_SALES ~ PREMIUM_CUSTOMER, data = Chip %>% mutate(PREMIUM_CUSTOMER = as.factor(PREMIUM_CUSTOMER)))
+```
+The mean total sales for budget, mainstream, and premium groups are 7.223785, 7.321973, and 7.226957 respectively. ANOVA indicates that there is a significant difference in total sales among at least one of the groups. The Games-Howell post hoc test reveals that the mainstream group differs significantly from both budget and premium groups, while the budget and premium groups are not significantly different from each other. This suggests that mainstream customers tend to spend more on chip products.
+
+Q10) Do total sales significantly differ between lifestage groups?
+
+```{r Boxplot of total sales between LIFESTAGE groups}
+Chip %>%
+  ggplot(aes(x = LIFESTAGE, y = TOT_SALES)) +
+  geom_boxplot(fill = "red") +
+  labs(
+    x = "Lifestage Category",
+    y = "Total Sales"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r statistical summary of total sales based on LIFESTAGE groups}
+Chip %>%
+  group_by(LIFESTAGE) %>%
+  summarise(mean = mean(TOT_SALES, na.rm = TRUE), sd = sd(TOT_SALES, na.rm = TRUE))
+```
+
+```{r levenetest for variance equality between LIFESTAGE groups}
+leveneTest(TOT_SALES ~ LIFESTAGE, data = Chip)
+```
+
+```{r ANOVA test for LIFESTAGE groups}
+oneway.test(TOT_SALES ~ LIFESTAGE,
+  data = Chip,
+  var.equal = FALSE
+)
+```
+
+```{r Post Hoc test ANOVA for LIFESTAGE groups}
+gamesHowellTest(TOT_SALES ~ LIFESTAGE, data = Chip %>% mutate(LIFESTAGE= as.factor(LIFESTAGE)))
+```
+Average Sales:
+The average total sales are fairly similar across all lifestage groups, ranging from 7.12 to 7.35.
+
+Highest: Older Singles/Couples (7.35)
+
+Lowest: Young Singles/Couples (7.12)
+
+Statistical Differences (Games-Howell Test):
+Significant differences in total sales were mostly observed between:
+
+Young Singles/Couples and almost every other group (very small p-values, e.g., <2e-16 vs Older Singles/Couples).
+
+Older Families vs:
+
+Older Singles/Couples (p = 8.1e-14)
+
+Retirees (p = 1.1e-09)
+
+Young Singles/Couples (p = 1.2e-06)
+
+Midage Singles/Couples and:
+
+Older Families (p = 9.3e-06)
+
+Young Families (p = 9.1e-06)
+
+Young Singles/Couples (p = 7.6e-14)
+
+No Significant Differences were found among:
+
+Midage Singles/Couples, Retirees, and Older Singles/Couples (p > 0.7)
+
+New Families, Older Families, and Young Families (p = 0.99)
+
+While the average total sales values are close across lifestage segments, Young Singles/Couples consistently show significantly lower sales compared to most other groups. On the other hand, Older and Retired groups tend to spend more, but not always at significantly higher levels.
+
+Q11) Which brand is the most popular among different 'LIFESTAGE' and 'PREMIUM_CUSTOMER' groups?
+
+```{r Top 3 favorite brands among LIFESTAGE and PREMIUM_CUSTOMER}
+Chip %>%
+  group_by(LIFESTAGE,PREMIUM_CUSTOMER, product_brand) %>%
+  summarise(total_count = sum(PROD_QTY)) %>%
+  ungroup() %>%
+  group_by(LIFESTAGE,PREMIUM_CUSTOMER) %>%
+  mutate(total_percent = total_count/sum(total_count)*100) %>%
+  slice_max(order_by = total_percent, n = 3) %>%
+  ungroup() %>%
+  mutate(
+    product_brand = reorder(product_brand, -total_percent),
+    LIFESTAGE= factor(LIFESTAGE, 
+           levels = c("YOUNG SINGLES/COUPLES", "MIDAGE SINGLES/COUPLES","OLDER SINGLES/COUPLES", "NEW FAMILIES","YOUNG FAMILIES", "OLDER FAMILIES", "RETIREES"))
+    ) %>%
+  ggplot(aes(x = PREMIUM_CUSTOMER, y = total_percent, fill = product_brand)) +
+  geom_bar(position = "dodge", stat = "identity") +
+  facet_wrap(~ LIFESTAGE) +
+  labs(title = "Favorite Brand by Lifestage and Premium Customer Category",
+       y = "Percentage of Top Brand Appearances",
+       x = "Premium Customer") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Q12) What is the most popular chip product among 'LIFESTAGE' and 'PREMIUM_CUSTOMER' groups?
+
+```{r Most favorite chips among LIFESTAGE and PREMIUM_CUSTOMER}
+Chip %>%
+  mutate(product_name = paste(product_brand,product_name, sep = "-")) %>%
+  group_by(LIFESTAGE,PREMIUM_CUSTOMER, product_name) %>%
+  summarise(total_count = sum(PROD_QTY)) %>%
+  ungroup() %>%
+  group_by(LIFESTAGE,PREMIUM_CUSTOMER) %>%
+  mutate(total_percent = total_count/sum(total_count)*100) %>%
+  slice_max(order_by = total_percent, n = 1) %>%
+  ungroup() %>%
+  mutate(
+    product_name = reorder(product_name, -total_percent),
+    LIFESTAGE= factor(LIFESTAGE, 
+           levels = c("YOUNG SINGLES/COUPLES", "MIDAGE SINGLES/COUPLES","OLDER SINGLES/COUPLES", "NEW FAMILIES","YOUNG FAMILIES", "OLDER FAMILIES", "RETIREES"))
+    ) %>%
+  ggplot(aes(x = PREMIUM_CUSTOMER, y = total_percent, fill = product_name)) +
+  geom_bar(position = "dodge", stat = "identity") +
+  facet_wrap(~ LIFESTAGE) +
+  labs(title = "Most Favorite Chip Product by Lifestage and Premium Customer Category",
+       y = "Percentage of Top Product Appearances",
+       x = "Premium Customer",
+       fill = "Product Name") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) 
+
+```
+
+This chart highlights the most preferred chip product in each combination of 'LIFESTAGE' and 'PREMIUM_CUSTOMER' category. The product name is a combination of the brand and item name, making it easy to see specific preferences. Each bar shows the product with the highest share of purchases within that segment.
+
+# Assosiacion Rule Analysis
+
+a) Association Rule Analysis: Brand Loyalty and Relationships
+
+```{r Plot Brands loyalty}
+Chip %>%
+  group_by(LYLTY_CARD_NBR) %>%
+  mutate(tot_brand = n_distinct(product_brand)) %>%
+  filter(tot_brand == 1) %>%
+  ungroup() %>%
+  group_by(product_brand) %>%
+  summarise(loyal = n_distinct(LYLTY_CARD_NBR)) %>%
+  ggplot(aes(x = reorder(product_brand, - loyal ), y = loyal)) +
+  geom_bar(stat = "identity", fill = "purple") +
+  labs(
+    title = "Total Number of Customers Loyal to a Single Brand",
+    x = "Brand",
+    y = "NUmber of Loyal Customers"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r Percentage of customers that purchased another brand}
+Chip %>%
+  group_by(LYLTY_CARD_NBR) %>%
+  summarise(tot_uniq_brand = n_distinct(product_brand)) %>%
+  ungroup() %>%
+  summarise(percent_customer = n_distinct(LYLTY_CARD_NBR[tot_uniq_brand >1])/n_distinct(LYLTY_CARD_NBR)*100)
+```
+
+```{r Percentage of customer that buy another brand based on LIFESTAGE and PREMIUM_CUSTOMER}
+Chip %>%
+  group_by(LYLTY_CARD_NBR, LIFESTAGE, PREMIUM_CUSTOMER) %>%
+  summarise(tot_uniq_brand = n_distinct(product_brand)) %>%
+  ungroup() %>%
+  group_by(LIFESTAGE, PREMIUM_CUSTOMER) %>%
+  summarise(percent_customer = n_distinct(LYLTY_CARD_NBR[tot_uniq_brand >1])/n_distinct(LYLTY_CARD_NBR)*100)
+```
+
+```{r Transform Chip dataset to list of product brand}
+basket_data <- Chip %>%
+  group_by(LYLTY_CARD_NBR) %>%
+  summarise(items = list(unique(product_brand)))
+```
+
+```{r Transform data of brand list to transaction format}
+trans_list <- as(basket_data$items, "transactions")
+```
+
+
+```{r Brand Kettle with other}
+rules <- apriori(trans_list, parameter = list(supp = 0.01, conf = 0.1), appearance = list(lhs = "Kettle", default = "rhs"))
+sorted_rules <- sort(rules, by = "lift", decreasing = TRUE)
+inspect(sorted_rules[1:10])
+```
+
+```{r brand Smiths with other}
+rules <- apriori(trans_list, parameter = list(supp = 0.01, conf = 0.1), appearance = list(lhs = "Smiths", default = "rhs"))
+sorted_rules <- sort(rules, by = "lift", decreasing = TRUE)
+inspect(sorted_rules[1:10])
+```
+
+```{r brand Doritos with other}
+rules <- apriori(trans_list, parameter = list(supp = 0.01, conf = 0.1), appearance = list(lhs = "Doritos", default = "rhs"))
+sorted_rules <- sort(rules, by = "lift", decreasing = TRUE)
+inspect(sorted_rules[1:10])
+```
+
+```{r brand Pringles with other}
+rules <- apriori(trans_list, parameter = list(supp = 0.01, conf = 0.1), appearance = list(lhs = "Pringles", default = "rhs"))
+sorted_rules <- sort(rules, by = "lift", decreasing = TRUE)
+inspect(sorted_rules[1:10])
+```
+
+b) Association Rule Analysis: Chip Products Loyalty and Relationships
+
+```{r top 10 Product loyalty}
+Chip %>%
+  group_by(LYLTY_CARD_NBR) %>%
+  mutate(product_name = paste(product_brand, product_name, sep = " : "),tot_prod = n_distinct(product_name)) %>%
+  filter(tot_prod == 1) %>%
+  ungroup() %>%
+  group_by(product_name) %>%
+  summarise(loyal = n_distinct(LYLTY_CARD_NBR)) %>%
+  ungroup() %>%
+  slice_max(order_by = loyal, n = 10) %>%
+  ggplot(aes(x = reorder(product_name, - loyal ), y = loyal)) +
+  geom_bar(stat = "identity", fill = "purple") +
+  labs(
+    title = "Top 10 Products with the Most Loyal Customers",
+    x = "Product",
+    y = "Number of Loyal Customers"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r Percentage of customer that buy another product}
+Chip %>%
+  group_by(LYLTY_CARD_NBR) %>%
+  summarise(tot_uniq_prod = n_distinct(product_name)) %>%
+  ungroup() %>%
+  summarise(percent_customer = n_distinct(LYLTY_CARD_NBR[tot_uniq_prod >1])/n_distinct(LYLTY_CARD_NBR)*100)
+```
+
+```{r Percentage of customer that buy another product based on lifestage and premium customer}
+Chip %>%
+  group_by(LYLTY_CARD_NBR, LIFESTAGE, PREMIUM_CUSTOMER) %>%
+  summarise(tot_uniq_prod = n_distinct(product_name)) %>%
+  ungroup() %>%
+  group_by(LIFESTAGE, PREMIUM_CUSTOMER) %>%
+  summarise(percent_customer = n_distinct(LYLTY_CARD_NBR[tot_uniq_prod >1])/n_distinct(LYLTY_CARD_NBR)*100)
+```
+
+```{r transform data to list of product}
+basket_data <- Chip %>%
+  group_by(LYLTY_CARD_NBR) %>%
+  mutate(product_name = paste(product_brand, product_name, sep = " : ")) %>%
+  summarise(items = list(unique(product_name)))
+```
+
+```{r transform data of product list to transaction format}
+trans_list <- as(basket_data$items, "transactions")
+```
+
+```{r Kettle : Mozzarella Basil & Pesto with other}
+rules <- apriori(trans_list, parameter = list(supp = 0.001, conf = 0.05), appearance = list(lhs = "Kettle : Mozzarella Basil & Pesto", default = "rhs"))
+sorted_rules <- sort(rules, by = "lift", decreasing = TRUE)
+inspect(sorted_rules[1:10])
+```
+
+```{r Kettle : Tortilla Chips Honey & Jalapeno Chilli with other}
+rules <- apriori(trans_list, parameter = list(supp = 0.001, conf = 0.05), appearance = list(lhs = "Kettle : Tortilla Chips Honey & Jalapeno Chilli", default = "rhs"))
+sorted_rules <- sort(rules, by = "lift", decreasing = TRUE)
+inspect(sorted_rules[1:10])
+```
+
+```{r Cobs : Popd Sea Salt Chips with other}
+rules <- apriori(trans_list, parameter = list(supp = 0.001, conf = 0.05), appearance = list(lhs = "Cobs : Pop'd Sea Salt Chips", default = "rhs"))
+sorted_rules <- sort(rules, by = "lift", decreasing = TRUE)
+inspect(sorted_rules[1:10])
+```
+
+```{r Tyrrells Crisps : Crisps Ched & Chives with other}
+rules <- apriori(trans_list, parameter = list(supp = 0.001, conf = 0.05), appearance = list(lhs = "Tyrrells Crisps : Crisps Ched & Chives", default = "rhs"))
+sorted_rules <- sort(rules, by = "lift", decreasing = TRUE)
+inspect(sorted_rules[1:10])
+```
+
+```{r Kettle : Sweet Potato Sea Salt with other}
+rules <- apriori(trans_list, parameter = list(supp = 0.001, conf = 0.05), appearance = list(lhs = "Kettle : Sweet Potato Sea Salt", default = "rhs"))
+sorted_rules <- sort(rules, by = "lift", decreasing = TRUE)
+inspect(sorted_rules[1:10])
+```
+
+# Export Chip Data to Excel
+
+```{r Export Chip data to excel}
+# Install package if not already installed
+# install.packages("openxlsx")
+
+# Load the package
+#library(openxlsx)
+# Set working directory
+#setwd("C:/Users/User/Documents/Project Forage/Quantium")
+# Export to Excel
+#write.xlsx(Chip, "chip_data.xlsx")
+
+```
+

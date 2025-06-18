@@ -6,4 +6,6 @@ The objective of this project is stated as below :-
 2. Develop metrics and examine sales drivers to gain insights into overall sales performance.
 3. Create visualizations and prepare findings to formulate a clear recommendation for the client's strategy.
 
-
+## Customers and Transactions Data
+The data used in this projects as below :-
+1. [Transaction Data](QVI_transaction_data.xlsx)

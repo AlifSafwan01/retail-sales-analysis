@@ -1,16 +1,16 @@
 # Quantium Data Analytics Job Simulation - Data Preparation and Customer Analytics
-In this project simulation, I assigned as a part of Quantium's Retail Analytics team and have been approached by our client, the Category Manager for Chips, who want to better understand the types of customers who purchase chips and their purchasing behavior.
+In this project simulation, I was assigned to Quantium's Retail Analytics team. I was approached by our client, the Category Manager for Chips, who wants to better understand the types of customers who purchase chips and their purchasing behavior.
 
-The objective of this project is stated as below :-
+The objective of this project is as follows :-
 1. Analyze transaction and customer data to identify trends and inconsistencies.
 2. Develop metrics and examine sales drivers to gain insights into overall sales performance.
 3. Create visualizations and prepare findings to formulate a clear recommendation for the client's strategy.
 
 ## Customers and Transactions Data
-The data used in this projects as below :-
+The data used in this projects is as follows :-
 1. [Transaction Data](QVI_transaction_data.xlsx)
 
-In this data contains 8 variables and 264,836 observations :-
+This dataset contains 8 variables and 264,836 observations :-
 
 | Variable | Description |
 | --- | --- |
@@ -22,21 +22,22 @@ In this data contains 8 variables and 264,836 observations :-
 | PROD_NAME | The unfiltered name of chip product |
 | PROD_QTY | The quantity purchased by the customer per transaction |
 | TOT_SALES | The total price per transaction |
+
 2. [Customer Data](QVI_purchase_behaviour.csv)
 
-In this data contains 3 variables and 72,637 observations :-
+This dataset contains 3 variables and 72,637 observations :-
 
 | Variable | Description |
 | --- | --- |
 | LYLTY_CARD_NBR | The unique ID for each customer |
-| LIFESTAGE |  The category of customer life stage (7 groups) |
-| PREMIUM_CUSTOMER | The category of customer shopping budget (3 groups) |
+| LIFESTAGE |  The customer's life stage category (7 groups) |
+| PREMIUM_CUSTOMER | The customer's budget category (3 groups) |
 
 ## Chip Data
 
-Chip data is prepared data after removing outlier, removing non chip product, formatting date, extracting product brand, name and size from PROD_NAME, removing inconsitency and joining Transaction and Customer data through LYLTY_CARD_NBR.
+The Chip dataset is a cleaned and prepared version created by removing outlier, filtering out non-chip products, formatting dates, and extracting product brand, name and size from PROD_NAME. It also involved correcting inconsistencies and merging the Transaction and Customer data using LYLTY_CARD_NBR.
 
-In this data contains 13 variables and 251,158 observations :-
+This dataset contains 13 variables and 251,158 observations :-
 
 | Variable | Description |
 | --- | --- |
@@ -48,15 +49,15 @@ In this data contains 13 variables and 251,158 observations :-
 | PROD_NAME | The unfiltered name of chip product |
 | PROD_QTY | The quantity purchased by the customer per transaction |
 | TOT_SALES | The total price per transaction |
-| packed_size | The size of packaging (g) |
-| product_brand | The brand of chip |
-| product_name | The name of chip |
-| LIFESTAGE |  The category of customer life stage (7 groups) |
-| PREMIUM_CUSTOMER | The category of customer shopping budget (3 groups) |
+| packed_size | The size of the packaging (g) |
+| product_brand | The chip brand |
+| product_name | The chip product name |
+| LIFESTAGE |  The customer's life stage category (7 groups) |
+| PREMIUM_CUSTOMER | The customer's budget category (3 groups) |
 
 ## Analysis and Report
 
-For full report, I included three file.
-1. [Chip Analysis.Rmd](Chip-Analysis.Rmd) in R markdown format.
-2. [Chip-Analysis.html](Chip-Analysis.html) in html format.
-3. [Chip-Analysis.pdf](Chip-Analysis.pdf) in pdf format and contains all result.
+The full report is provided in three formats.
+1. [Chip-Analysis.Rmd](Chip-Analysis.Rmd) - R markdown format.
+2. [Chip-Analysis.html](Chip-Analysis.html) - HTML format.
+3. [Chip-Analysis.pdf](Chip-Analysis.pdf) - PDF format.

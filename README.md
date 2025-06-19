@@ -56,4 +56,7 @@ In this data contains 13 variables and 251,158 observations :-
 
 ## Analysis and Report
 
-For full report, 
+For full report, I included three file.
+1. [Chip Analisis.Rmd](Chip Analysis.Rmd) in R markdown format.
+2. [Chip-Analysis.html](Chip-Analysis.html) in html format.
+3. [Chip-Analysis.pdf](Chip-Analysis.pdf) in pdf format and contains all result.
